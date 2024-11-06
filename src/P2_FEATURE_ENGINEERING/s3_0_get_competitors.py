@@ -75,7 +75,7 @@ def read_cities():
         gpd
         .read_parquet("../../data/misc/cities.parquet")
         .to_crs("EPSG:6372")
-        ['city_cluster'].unique()
+        ['cluster'].unique()
         )
 
 
@@ -278,7 +278,7 @@ def distance_of_competitors(gdf):
                 x['built_area_neighbor'] / x['built_area_own'],
         )
         # filter
-        .query("time_distance.le(1) & land_area_proportion.between(0.5, 2) & built_area_proportion.between(0.25, 4)")    
+        .query("time_distance.le(1) & land_area_proportion.between(0.5, 2) & built_area_proportion.between(0.25, 4)", engine='python')
         .drop(
             columns=[
                 'time_distance',
@@ -482,7 +482,7 @@ def competitors_stats(df, col_to_summarize, xi=0.2):
         'weighted_mean': w_mean,
         'weighted_std': np.sqrt(
             # unbiased weighted std (theorem)
-            (1 / (1 - sq_sum_weights)) * np.sum(weights * (x_array - w_mean)**2)
+            (1/(1 - sq_sum_weights)) * np.sum(weights * (x_array - w_mean)**2)
         ),
         'mean': np.mean(x_array),
         'std': np.std(x_array),
@@ -621,7 +621,9 @@ def main_comps(
     df_competitors = (
         df_competitors
         .merge(
-            gdf_properties[['observation_id', 'city_cluster', 'property_type']],
+            gdf_properties[
+                ['observation_id', 'city_cluster', 'property_type']
+                ],
             left_on='observation_id_own',
             right_on='observation_id',
             how='inner'
@@ -652,6 +654,7 @@ def main_comps(
         )
     # save competitors info
     save_dataframe(df_competitors_info, "competitors_info", city)
+
 
 # main
 # read cities
