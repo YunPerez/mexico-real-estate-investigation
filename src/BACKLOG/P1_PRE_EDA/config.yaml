@@ -1,22 +1,24 @@
 model:
   purpose: prediction
-  project_version: 2.0
   model_name: catboost
   hyperparameters:
-    iterations: 1000
-    learning_rate: 0.03
-    depth: 6
-    l2_leaf_reg: 3
+    iterations: 500
+    learning_rate: 0.05
+    # depth: 6
+    # l2_leaf_reg: 3
     loss_function: RMSE
     eval_metric: RMSE
     random_seed: 42
-    od_type: Iter
-    od_wait: 20
     verbose: 100
+    use_best_model: true
+    early_stopping_rounds: 50
   data:
-    n_rows: 1000
+    n_rows: 100000
+    split_type: random
     train_size: 0.8
     validation_size: 0.1
+    stratify: property_type_id
+    best_percentage: 0.99
   target: 
     ppsm_saleable: boxcox
   features:
@@ -136,3 +138,10 @@ categorical_recasters:
     1: 'with_suminister'
     2: 'without_suminister'
     3: 'other'
+mlflow:
+  host: 127.0.0.1
+  port: 8080
+  experiment_name: 'housing_valuation'
+  feature_importance:
+    top_n: 20
+    do_plot: true

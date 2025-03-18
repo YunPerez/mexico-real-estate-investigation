@@ -171,3 +171,7 @@ notes.txt
 
 # catboost_info
 catboost_info/
+
+# ignore mlflow artifacts
+mlruns/
+mlartifacts/
