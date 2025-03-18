@@ -22,3 +22,9 @@ For running the `InegiPY` package, you need to have two tokens from the INEGI AP
     b. Get the **Ruteo** token
 2. You must save them into a `.env` file in the root of the notebook project.
 
+## MLflow
+Run the following command to start the MLflow server before running the experiment notebooks:
+
+```bash
+mlflow server --host 127.0.0.1 --port 8080
+```
