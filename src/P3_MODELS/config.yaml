@@ -1,0 +1,104 @@
+model:
+  model_name: catboost
+  purpose: prediction
+  hyperparameters:
+    iterations: 500
+    learning_rate: 0.1
+    # depth: 6
+    # l2_leaf_reg: 3
+    loss_function: RMSE
+    eval_metric: RMSE
+    random_seed: 42
+    verbose: 100
+    use_best_model: true
+    early_stopping_rounds: 20
+  data:
+    # n_rows: 100000
+    split_type: random
+    train_size: 0.8
+    validation_size: 0.1
+    stratify: property_type_id
+    best_percentage: 0.99
+  target: 
+    ppsm_saleable: identity
+  features:
+    quarters_since_first_appraisal: identity
+    half_bathrooms: identity
+    full_bathrooms: identity
+    ppsm_terrain_lower: identity
+    ppsm_terrain_upper: identity
+    remaining_useful_life: identity
+    saleable_area: identity
+    property_type_id: identity
+    land_area: identity
+    vivienda: identity
+    parking_lots: identity
+    distance_to_ocean: identity
+    ocean_label: identity
+    elevator_service_id: identity
+categorical_recasters:
+  equipment_id:
+    1: 'low'
+    2: 'medium'
+    3: 'high'
+    4: 'perfect'
+  potable_water_service_id:
+    0: 'does_not_apply'
+    1: 'exists'
+    2: 'not_exist'
+    3: 'not_exist'
+  elevator_service_id:
+    0: 'does_not_apply'
+    1: 'exists'
+    2: 'not_exist'
+  lighting_service_id:
+    0: 'does_not_apply'
+    1: 'a'
+    2: 'b'
+    3: 'c'
+  road_materials_id:
+    0: 'does_not_apply'
+    1: 'terrace'
+    2: 'asphalt'
+    3: 'concrete'
+    4: 'cobblestone'
+    5: 'paver'
+    6: 'other'
+    7: 'not_exist'
+    8: 'permeable_pavement'
+  urban_proximity_id:
+    1: 'centric'
+    2: 'intermediate'
+    3: 'peripheral'
+    4: 'expansion'
+    5: 'rural'
+  property_type_id:
+    2: 'house'
+    3: 'house_on_condominium'
+    4: 'apartment'
+  telephone_service_supply_id:
+    0: 'does_not_apply'
+    1: 'aerial'
+    2: 'underground'
+    3: 'not_exist'
+    4: 'not_exist'
+    5: 'not_exist'
+  sidewalk_id:
+    0: 'does_not_apply'
+    1: 'concrete'
+    2: 'paver'
+    3: 'cobblestone'
+    4: 'other'
+    5: 'not_exist'
+  electrical_supply_service_id:
+    0: 'does_not_apply'
+    1: 'with_suminister'
+    2: 'without_suminister'
+    3: 'other'
+mlflow:
+  host: 127.0.0.1
+  port: 8080
+  experiment_name: 'housing_valuation_index'
+  feature_importance:
+    top_n: 20
+    do_plot: true
