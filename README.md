@@ -26,5 +26,6 @@ For running the `InegiPY` package, you need to have two tokens from the INEGI AP
 Run the following command to start the MLflow server before running the experiment notebooks:
 
 ```bash
+conda activate mds-research-stay
 mlflow server --host 127.0.0.1 --port 8080
 ```

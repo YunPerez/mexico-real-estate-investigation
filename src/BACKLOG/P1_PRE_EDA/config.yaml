@@ -141,7 +141,7 @@ categorical_recasters:
 mlflow:
   host: 127.0.0.1
   port: 8080
-  experiment_name: 'housing_valuation'
+  experiment_name: 'housing_valuation_index'
   feature_importance:
     top_n: 20
     do_plot: true
