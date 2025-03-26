@@ -175,3 +175,6 @@ catboost_info/
 # ignore mlflow artifacts
 mlruns/
 mlartifacts/
+
+# models
+models/
