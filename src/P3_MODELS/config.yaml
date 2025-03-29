@@ -1,6 +1,6 @@
 model:
   model_name: catboost
-  purpose: prediction
+  purpose: counterfactual
   hyperparameters:
     iterations: 500
     learning_rate: 0.1
@@ -22,20 +22,36 @@ model:
   target: 
     ppsm_saleable: identity
   features:
-    quarters_since_first_appraisal: identity
+    # controls
     half_bathrooms: identity
     full_bathrooms: identity
-    ppsm_terrain_lower: identity
-    ppsm_terrain_upper: identity
     remaining_useful_life: identity
     saleable_area: identity
-    property_type_id: identity
     land_area: identity
-    vivienda: identity
+    property_type_id: identity
     parking_lots: identity
-    distance_to_ocean: identity
-    ocean_label: identity
-    elevator_service_id: identity
+    # time
+    quarters_since_first_appraisal: identity
+    # space
+    # hex_longitude: identity
+    # hex_latitude: identity
+    ppsm_terrain: identity
+    # hex_embedding_1: identity
+    # hex_embedding_2: identity
+    # hex_embedding_3: identity
+    # hex_embedding_4: identity
+    # hex_embedding_5: identity
+    # hex_embedding_6: identity
+    # hex_embedding_7: identity
+    # hex_embedding_8: identity
+    # hex_embedding_9: identity
+    # hex_embedding_10: identity
+    # hex_embedding_11: identity
+    # hex_embedding_12: identity
+    # hex_embedding_13: identity
+    # hex_embedding_14: identity
+    # hex_embedding_15: identity
+    # hex_embedding_16: identity
 categorical_recasters:
   equipment_id:
     1: 'low'

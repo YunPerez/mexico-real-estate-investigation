@@ -111,6 +111,8 @@ def read_data(file, config):
                 np.where(x['age_in_months'].le(1), 'new', 'used'),
             conservacion_recat=lambda x:
                 x['conservation_status_id'].replace({7: 3.5}).astype(int),
+            is_renovated=lambda x:
+                np.where(x['conservation_status_id'].ge(7), 'renovated', 'not_renovated'),
         )
         .assign(
             is_new=lambda x: x['is_new'].astype('category'),
