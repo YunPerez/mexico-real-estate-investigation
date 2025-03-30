@@ -23,35 +23,35 @@ model:
     ppsm_saleable: identity
   features:
     # controls
-    half_bathrooms: identity
-    full_bathrooms: identity
-    remaining_useful_life: identity
-    saleable_area: identity
-    land_area: identity
-    property_type_id: identity
-    parking_lots: identity
-    # time
-    quarters_since_first_appraisal: identity
-    # space
-    # hex_longitude: identity
-    # hex_latitude: identity
-    ppsm_terrain: identity
-    # hex_embedding_1: identity
-    # hex_embedding_2: identity
-    # hex_embedding_3: identity
-    # hex_embedding_4: identity
-    # hex_embedding_5: identity
-    # hex_embedding_6: identity
-    # hex_embedding_7: identity
-    # hex_embedding_8: identity
-    # hex_embedding_9: identity
-    # hex_embedding_10: identity
-    # hex_embedding_11: identity
-    # hex_embedding_12: identity
-    # hex_embedding_13: identity
-    # hex_embedding_14: identity
-    # hex_embedding_15: identity
-    # hex_embedding_16: identity
+      half_bathrooms: identity
+      full_bathrooms: identity
+      remaining_useful_life: identity
+      saleable_area: identity
+      land_area: identity
+      property_type_id: identity
+      parking_lots: identity
+      # time
+      quarters_since_first_appraisal: identity
+      # space
+      # hex_longitude: identity
+      # hex_latitude: identity
+      # ppsm_terrain: identity
+      hex_embedding_1_d16_v2: identity
+      hex_embedding_2_d16_v2: identity
+      hex_embedding_3_d16_v2: identity
+      hex_embedding_4_d16_v2: identity
+      hex_embedding_5_d16_v2: identity
+      hex_embedding_6_d16_v2: identity
+      hex_embedding_7_d16_v2: identity
+      hex_embedding_8_d16_v2: identity
+      hex_embedding_9_d16_v2: identity
+      hex_embedding_10_d16_v2: identity
+      hex_embedding_11_d16_v2: identity
+      hex_embedding_12_d16_v2: identity
+      hex_embedding_13_d16_v2: identity
+      hex_embedding_14_d16_v2: identity
+      hex_embedding_15_d16_v2: identity
+      hex_embedding_16_d16_v2: identity
 categorical_recasters:
   equipment_id:
     1: 'low'
