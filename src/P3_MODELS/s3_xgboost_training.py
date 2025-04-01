@@ -1,11 +1,10 @@
 """
 @roman_avj
-18/3/25
+31/3/25
 
-This module is used to train a CatBoost model saving the experiments to local MLFlow server.
+This module is used to train an XGBoost model saving the experiments to local MLFlow server.
 """
-# add the tag of type of transformation to the objective variable
-# %% Imports
+# Imports
 import joblib
 import logging
 import warnings
@@ -21,7 +20,7 @@ from mlflow.models import infer_signature
 import numpy as np
 import pandas as pd
 import shap
-from catboost import CatBoostRegressor, Pool
+import xgboost as xgb
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import PowerTransformer, StandardScaler
@@ -381,7 +380,7 @@ class FeatureTransformer:
         )
 
 
-# split data
+# split data and prepare XGBoost data format
 def split_randomly_data(X, y, config, categorical_features=None):
     """
     Split data into train, validation, and test sets based on the provided configuration.
@@ -393,15 +392,28 @@ def split_randomly_data(X, y, config, categorical_features=None):
             - train_size (float): Proportion of data for training.
             - stratify (str or None): Column name for stratification.
             - validation_size (float or None): Proportion of training data for validation.
-        categorical_features (list or None): List of categorical feature indices.
+        categorical_features (list or None): List of categorical feature names.
 
     Returns:
-        dict: A dictionary containing CatBoost Pool objects for train, validation, and test sets.
+        dict: A dictionary containing the train, validation, and test sets as DataFrames/Series and 
+              corresponding DMatrix objects for XGBoost.
     """
+    # For XGBoost, we need to encode categorical features
+    X_encoded = X.copy()
+    
+    # Convert categorical features to numeric using one-hot encoding
+    if categorical_features:
+        for col in categorical_features:
+            if col in X_encoded.columns:
+                # Get dummies for each categorical feature and prefix with column name
+                dummies = pd.get_dummies(X_encoded[col], prefix=col, drop_first=False)
+                # Drop the original column and join the dummies
+                X_encoded = X_encoded.drop(col, axis=1).join(dummies)
+
     # Split train and test
     stratify_col = X[config['stratify']] if config.get('stratify') else None
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y,
+        X_encoded, y,
         train_size=config['train_size'],
         random_state=42,
         stratify=stratify_col
@@ -410,7 +422,7 @@ def split_randomly_data(X, y, config, categorical_features=None):
     # Split validation set if specified
     val_percentage = config.get('validation_size')
     if val_percentage and val_percentage > 0:
-        stratify_col_train = X_train[config['stratify']] if config.get('stratify') else None
+        stratify_col_train = X_train[config['stratify']] if config.get('stratify') and config['stratify'] in X_train else None
         X_train, X_val, y_train, y_val = train_test_split(
             X_train, y_train,
             test_size=val_percentage,
@@ -420,35 +432,52 @@ def split_randomly_data(X, y, config, categorical_features=None):
     else:
         X_val, y_val = None, None
 
+    # Create DMatrix objects for XGBoost
+    dtrain = xgb.DMatrix(X_train, label=y_train, enable_categorical=True)
+    dtest = xgb.DMatrix(X_test, label=y_test, enable_categorical=True)
+    dval = xgb.DMatrix(X_val, label=y_val, enable_categorical=True) if X_val is not None else None
+
     return {
-        'train': Pool(X_train, y_train, cat_features=categorical_features),
-        'validation': Pool(X_val, y_val, cat_features=categorical_features) if X_val is not None else None,
-        'test': Pool(X_test, y_test, cat_features=categorical_features)
+        'train': dtrain,
+        'validation': dval,
+        'test': dtest
     }
 
 
 # train model
-def train_catboost_model(pools, config):
+def train_xgboost_model(data_dict, config):
     """
-    Train a CatBoost model using the provided data pools and configuration.
+    Train an XGBoost model using the provided data pools and configuration.
 
     Args:
-        pools (dict): A dictionary containing CatBoost Pool objects for train, validation, and test sets.
-        config (dict): Configuration dictionary containing:
-            - model (dict): CatBoost model hyperparameters.
-            - mlflow (dict): MLFlow configuration settings.
+        data_dict (dict): A dictionary containing data for train, validation, and test sets.
+        config (dict): Configuration dictionary containing model hyperparameters.
 
     Returns:
-        CatBoostRegressor: A trained CatBoost model.
+        XGBRegressor: A trained XGBoost model.
     """
-    # Initialize CatBoost model
-    model = CatBoostRegressor(**config['hyperparameters'])
+    # Initialize XGBoost model
+    params = config['hyperparameters'].copy()
+    training_params = config['training'].copy()
 
-    # Train the model
-    model.fit(
-        pools['train'],
-        eval_set=pools['validation']
-    )
+    # Set up early stopping if validation set is provided
+    if data_dict['validation'] is not None:
+        evalset = [
+            (data_dict['validation'], 'validation'),
+        ]
+        model = xgb.train(
+            params,
+            data_dict['train'],
+            evals=evalset,
+            **training_params
+        )
+    else:
+        model = xgb.train(
+            params,
+            data_dict['train'],
+            evals=None,
+            **training_params
+        )
 
     return model
 
@@ -535,9 +564,11 @@ def plot_error_histogram(y, y_pred):
 
 
 def plot_feature_importance(model, X, n_size):
-    explainer = shap.TreeExplainer(model)
+    # get X_df from dmatrix
+    X_df = pd.DataFrame(X.get_data().toarray(), columns=X.feature_names)
 
-    # shap values
+    # explainer
+    explainer = shap.TreeExplainer(model)
     shap_values = explainer.shap_values(X)
 
     # plot
@@ -545,12 +576,36 @@ def plot_feature_importance(model, X, n_size):
         fig, ax = plt.subplots(figsize=(12, 8))
         shap.summary_plot(
             shap_values,
-            X,
+            X_df,
             max_display=n_size,
             show=False
         )
         plt.tight_layout()
     plt.close(fig)
+    # # get X_df from dmatrix
+    # X_df = pd.DataFrame(X.get_data().toarray(), columns=X.feature_names)
+
+    # # plot feature importance using shap for XGBoost with dmatrix X
+    # shap_values = model.predict(X, pred_contribs=True)
+    # feature_names = X.feature_names
+    # explanation = shap.Explanation(
+    #     values=shap_values[:, :-1],
+    #     # base_values=model.predict(X, pred_contribs=False),
+    #     data=X_df,
+    #     feature_names=feature_names
+    # )
+
+    # # plot
+    # with plt.style.context(style='tableau-colorblind10'):
+    #     fig, ax = plt.subplots(figsize=(10, 6))
+    #     shap.summary_plot(
+    #         explanation,
+    #         max_display=n_size,
+    #         show=False,
+    #     )
+    #     plt.title('Feature Importance')
+    #     plt.tight_layout()
+    # plt.close(fig)
     return fig
 
 
@@ -625,13 +680,11 @@ def plot_predicted_vs_real(y, y_pred):
 
 
 def plot_feature_importance_in_table(model):
-    # get feature importance
-    df_feature_importance = pd.DataFrame({
-        'feature': model.feature_names_,
-        'importance': model.feature_importances_
-    }).round(4)
-
-    df_feature_importance = df_feature_importance.sort_values('importance', ascending=False, ignore_index=True)
+    # For XGBoost, use feature_importances_ or get_score
+    df_feature_importance = pd.DataFrame(
+        model.get_score(importance_type='gain').items(),
+        columns=['feature', 'importance']
+    ).sort_values('importance', ascending=False)
 
     # plot
     with plt.style.context(style='tableau-colorblind10'):
@@ -659,7 +712,7 @@ def create_mlflow_dicts(config_model, tbl, pools):
     Args:
         config_model (dict): Configuration dictionary for the model.
         tbl (pd.DataFrame): Table containing metrics for train, validation, and test sets.
-        pools (dict): Dictionary containing CatBoost Pool objects for train, validation, and test sets.
+        pools (dict): Dictionary containing XGBoost Pool objects for train, validation, and test sets.
 
     Returns:
         tuple: A tuple containing three dictionaries (parameters, metrics, tags).
@@ -691,7 +744,7 @@ def create_mlflow_dicts(config_model, tbl, pools):
         if k not in ['worst_negative_error', 'worst_positive_error', 'meape', 'r2']
     })
     dict_metrics.update({
-        "n_features": pools['train'].shape[1]
+        "n_features": pools['train'].num_col(),
     })
 
     # s3: tags
@@ -719,7 +772,7 @@ def save_to_mlflow(
         dict_metrics (dict): Model metrics to log.
         dict_tags (dict): Tags to set in MLFlow.
         figs (dict): Dictionary of matplotlib figures to log as artifacts.
-        model (CatBoostRegressor): Trained CatBoost model.
+        model (XGBoostRegressor): Trained XGBoost model.
         X_sample (pd.DataFrame): Sample of features for signature inference.
         y_sample (pd.Series): Sample of target values for signature inference.
     """
@@ -739,7 +792,7 @@ def save_to_mlflow(
 
         # Log the model
         signature = infer_signature(X_sample, y_sample)
-        mlflow.catboost.log_model(
+        mlflow.xgboost.log_model(
             model,
             artifact_path="models",
             signature=signature
@@ -747,10 +800,10 @@ def save_to_mlflow(
 
 
 # main
-def main():
+def main()
     # S0: Load configurations
     logger.info("Loading configurations...")
-    config_model, recaster_mappers, mlflow_config = get_configs('config.yaml')
+    config_model, recaster_mappers, mlflow_config = get_configs('config_xgb.yaml')
 
     # S1: Read data
     logger.info("Reading data...")
@@ -774,9 +827,9 @@ def main():
     # delete X, y to free memory
     del X, y
 
-    # S4: Train CatBoost model
-    logger.info("Training CatBoost model...")
-    model = train_catboost_model(pools, config_model)
+    # S4: Train XGBoost model
+    logger.info("Training XGBoost model...")
+    model = train_xgboost_model(pools, config_model)
 
     # S5: Calculate metrics
     logger.info("Calculating metrics...")
@@ -800,19 +853,22 @@ def main():
     figs = {
         "y_transformed": plot_y(y_transformed),
         "error_histogram": plot_error_histogram(y_obs_test, y_pred_test),
-        "feature_importance": plot_feature_importance(model, X_transformed.sample(10_000), n_size=10),
+        "feature_importance": plot_feature_importance(
+            model,
+            pools['train'].slice(np.arange(10_000)),
+            n_size=10
+            ),
         "results_table": plot_results_table(tbl_results),
         "predicted_vs_real": plot_predicted_vs_real(y_obs_test, y_pred_test),
         "feature_importance_table": plot_feature_importance_in_table(model)
     }
 
     # S7: Save results to MLFlow
-    # Set up MLFlow
     logger.info("Saving results to MLFlow")
     mlflow.set_tracking_uri(f"http://{mlflow_config['host']}:{mlflow_config['port']}")
     mlflow.set_experiment(mlflow_config['experiment_name'])
     dict_params, dict_metrics, dict_tags = create_mlflow_dicts(config_model, tbl_results, pools)
-    # Save to MLFlow
+
     save_to_mlflow(
         dict_params, dict_metrics, dict_tags, figs,
         model, X_transformed.sample(100), y_pred_test
