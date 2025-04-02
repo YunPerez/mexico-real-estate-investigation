@@ -1,6 +1,6 @@
 model:
   model_name: xgboost
-  purpose: trials
+  purpose: hyperopt
   hyperparameters:
     objective: reg:squarederror
     eval_metric: rmse
@@ -19,6 +19,7 @@ model:
     validation_size: 0.1
     stratify: property_type_id
     best_percentage: 0.99
+    # n_rows: 10000
   target: 
     ppsm_saleable: boxcox
   features:

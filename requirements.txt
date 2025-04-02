@@ -25,3 +25,5 @@ networkx==3.3
 ipykernel==6.29.5
 PyYAML==6.0
 mlflow==2.21
+optuna==4.2.1
+optuna-integration==4.2.1

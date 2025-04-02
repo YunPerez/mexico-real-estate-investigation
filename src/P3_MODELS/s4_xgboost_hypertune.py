@@ -1,10 +1,10 @@
 """
 @roman_avj
-31/3/25
+1/4/25
 
-This module is used to train an XGBoost model saving the experiments to local MLFlow server.
+This module is used to train an XGBoost and hypertune it using Optuna.
 """
-# Imports
+# %% Imports
 import joblib
 import logging
 import warnings
@@ -21,14 +21,27 @@ import numpy as np
 import pandas as pd
 import shap
 import xgboost as xgb
+import optuna
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import PowerTransformer, StandardScaler
+from sklearn.metrics import mean_absolute_percentage_error
+import warnings
+
 
 # Settings
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Warnings
+# Suppress specific XGBoost warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="xgboost")
+warnings.filterwarnings("ignore", category=FutureWarning, module="xgboost")
+warnings.filterwarnings("ignore", category=UserWarning, module="mlflow.xgboost")
+
+# Optuna
+optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 # dir
 DIR_DATA = '../../data'
@@ -444,40 +457,184 @@ def split_randomly_data(X, y, config, categorical_features=None):
     }
 
 
-# train model
-def train_xgboost_model(data_dict, config):
+# hyperoptimization
+def create_mlflow_dicts_hyperopt(params, config_model, pools, mape):
     """
-    Train an XGBoost model using the provided data pools and configuration.
+    Create dictionaries for parameters, metrics, and tags to upload to MLFlow.
 
     Args:
+        config_model (dict): Configuration dictionary for the model.
+        tbl (pd.DataFrame): Table containing metrics for train, validation, and test sets.
+        pools (dict): Dictionary containing XGBoost Pool objects for train, validation, and test sets.
+
+    Returns:
+        tuple: A tuple containing three dictionaries (parameters, metrics, tags).
+    """
+    # s1: parameters
+    dict_params = {
+        f"hyperparameters__{k}": v
+        for k, v in params.items()
+    }
+
+    # s2: create metrics
+    dict_metrics = {
+        "n_features": pools['train'].num_col(),
+        "test__mape": mape
+    }
+
+    # s3: tags
+    dict_tags = {
+        'model': config_model['model_name'],
+        'purpose': config_model['purpose'],
+        'target': list(config_model['target'].keys())[0],
+        'split_type': config_model['data']['split_type'],
+        'objective_variable_transformation': config_model['target'].get(
+            list(config_model['target'].keys())[0]
+        ),
+    }
+
+    return dict_params, dict_metrics, dict_tags
+
+
+def save_to_mlflow_hyperopt(
+        dict_params, dict_metrics, dict_tags, model, X_sample, y_sample
+        ):
+    """
+    Save model parameters, metrics, tags, plots, and the model itself to MLFlow.
+
+    Args:
+        dict_params (dict): Model parameters to log.
+        dict_metrics (dict): Model metrics to log.
+        dict_tags (dict): Tags to set in MLFlow.
+        figs (dict): Dictionary of matplotlib figures to log as artifacts.
+        model (XGBoostRegressor): Trained XGBoost model.
+        X_sample (pd.DataFrame): Sample of features for signature inference.
+        y_sample (pd.Series): Sample of target values for signature inference.
+    """
+    with mlflow.start_run(nested=True):
+        # Log parameters
+        mlflow.log_params(dict_params)
+
+        # Log metrics
+        mlflow.log_metrics(dict_metrics)
+
+        # Set tags
+        mlflow.set_tags(dict_tags)
+
+        # Log the model
+        signature = infer_signature(X_sample, y_sample)
+        mlflow.xgboost.log_model(
+            model,
+            artifact_path="models",
+            signature=signature,
+        )
+
+
+def objective(trial, data_dict, config, transformer):
+    """
+    Objective function for Optuna to optimize hyperparameters of the XGBoost model.
+
+    Args:
+        trial (optuna.Trial): Optuna trial object.
         data_dict (dict): A dictionary containing data for train, validation, and test sets.
         config (dict): Configuration dictionary containing model hyperparameters.
 
     Returns:
+        float: The mean absolute percentage error (MAPE) of the model on the validation set.
+    """
+    # Update hyperparameters based on trial
+    params = config['hyperparameters'].copy()
+
+    # Select Objective Function
+    objective_type = trial.suggest_categorical(
+        'objective',
+        [
+            'reg:squarederror',
+            'reg:absoluteerror'
+        ]
+    )
+
+    # Update
+    params.update({
+        # tunning
+        'objective': objective_type,
+        'max_depth': trial.suggest_int('max_depth', 3, 10),
+        'eta': trial.suggest_float('eta', 0.01, 0.4),
+        'subsample': trial.suggest_float('subsample', 0.5, 1.0),
+        'lambda': trial.suggest_float('lambda', 1e-8, 10),
+        # fixed
+        'eval_metric': 'mae',
+        'seed': 42,
+        'booster': 'gbtree',
+        'nthread': -1
+    })
+
+    # Callback: early stopping
+    pruning_callback = optuna.integration.XGBoostPruningCallback(
+        trial, 'validation-mae'
+        )
+    evals = [
+        (data_dict['validation'], 'validation')
+    ]
+
+    # Train the model
+    model = xgb.train(
+        params,
+        data_dict['train'],
+        evals=evals,
+        num_boost_round=1000,
+        early_stopping_rounds=25,
+        callbacks=[pruning_callback],
+        verbose_eval=False
+    )
+
+    # Make predictions
+    y_obs_test = get_target_value(
+        data_dict['test'].get_label(),
+        transformer
+    )
+    y_pred_test = get_predictions(
+        model, data_dict['test'], transformer
+    )
+
+    # Evaluate the model
+    mape = mean_absolute_percentage_error(y_obs_test, y_pred_test)
+
+    # Save the model to MLFlow
+    # generate dictionaries
+    dict_params, dict_metrics, dict_tags = create_mlflow_dicts_hyperopt(
+        params, config, data_dict, mape
+    )
+    # save
+    save_to_mlflow_hyperopt(
+        dict_params, dict_metrics, dict_tags,
+        model,
+        data_dict['test'].slice(np.arange(0, 10)).get_data(),
+        y_obs_test[:10]
+    )
+    return mape
+
+
+def train_xgboost_model(data_dict, params):
+    """
+    Train an XGBoost model using the provided data pools and params.
+
+    Args:
+        data_dict (dict): A dictionary containing data for train, validation, and test sets.
+        params  (dict): Configuration dictionary containing model hyperparameters.
+
+    Returns:
         XGBRegressor: A trained XGBoost model.
     """
-    # Initialize XGBoost model
-    params = config['hyperparameters'].copy()
-    training_params = config['training'].copy()
-
-    # Set up early stopping if validation set is provided
-    if data_dict['validation'] is not None:
-        evalset = [
-            (data_dict['validation'], 'validation'),
-        ]
-        model = xgb.train(
-            params,
-            data_dict['train'],
-            evals=evalset,
-            **training_params
-        )
-    else:
-        model = xgb.train(
-            params,
-            data_dict['train'],
-            evals=None,
-            **training_params
-        )
+    # Train the model
+    model = xgb.train(
+        params,
+        data_dict['train'],
+        evals=[(data_dict['validation'], 'validation')],
+        num_boost_round=1000,
+        early_stopping_rounds=25,
+        verbose_eval=100
+    )
 
     return model
 
@@ -752,27 +909,27 @@ def save_to_mlflow(
         X_sample (pd.DataFrame): Sample of features for signature inference.
         y_sample (pd.Series): Sample of target values for signature inference.
     """
-    with mlflow.start_run():
-        # Log parameters
-        mlflow.log_params(dict_params)
+    # Log parameters
+    mlflow.log_params(dict_params)
 
-        # Log metrics
-        mlflow.log_metrics(dict_metrics)
+    # Log metrics
+    mlflow.log_metrics(dict_metrics)
 
-        # Set tags
-        mlflow.set_tags(dict_tags)
+    # Set tags
+    mlflow.set_tags(dict_tags)
 
-        # Log figures
-        for fig_name, fig in figs.items():
-            mlflow.log_figure(fig, f"{fig_name}.png")
+    # Log figures
+    for fig_name, fig in figs.items():
+        mlflow.log_figure(fig, f"{fig_name}.png")
 
-        # Log the model
-        signature = infer_signature(X_sample, y_sample)
-        mlflow.xgboost.log_model(
-            model,
-            artifact_path="models",
-            signature=signature
-        )
+    # Log the model
+    signature = infer_signature(X_sample, y_sample)
+    mlflow.xgboost.log_model(
+        model,
+        artifact_path="models",
+        signature=signature
+    )
+
 
 # main
 def main():
@@ -802,54 +959,26 @@ def main():
     # delete X, y to free memory
     del X, y
 
-    # S4: Train XGBoost model
-    logger.info("Training XGBoost model...")
-    model = train_xgboost_model(pools, config_model)
-
-    # S5: Calculate metrics
-    logger.info("Calculating metrics...")
-    y_obs_test = get_target_value(
-        pools['test'].get_label(),
-        transformer
-    )
-    y_pred_test = get_predictions(model, pools['test'], transformer)
-    tbl_results = pd.DataFrame({
-        k: calculate_metrics(
-            y=get_target_value(v.get_label(), transformer),
-            y_pred=get_predictions(model, v, transformer),
-            best_percent=config_model['data'].get('best_percentage')
-        )
-        for k, v in pools.items()
-    })
-    logger.info("Test MAPE: {:.4f}".format(tbl_results.loc['mape', 'test']))
-
-    # S6: Plot results
-    logger.info("Plotting results...")
-    figs = {
-        "y_transformed": plot_y(y_transformed),
-        "error_histogram": plot_error_histogram(y_obs_test, y_pred_test),
-        "feature_importance": plot_feature_importance(
-            model,
-            pools['train'].slice(np.arange(10_000)),
-            n_size=10
-            ),
-        "results_table": plot_results_table(tbl_results),
-        "predicted_vs_real": plot_predicted_vs_real(y_obs_test, y_pred_test),
-        "feature_importance_table": plot_feature_importance_in_table(model)
-    }
-
-    # S7: Save results to MLFlow
-    logger.info("Saving results to MLFlow")
+    # S4: Hyperparameter tuning
+    logger.info("Starting hyperparameter tuning...")
     mlflow.set_tracking_uri(f"http://{mlflow_config['host']}:{mlflow_config['port']}")
     mlflow.set_experiment(mlflow_config['experiment_name'])
-    dict_params, dict_metrics, dict_tags = create_mlflow_dicts(config_model, tbl_results, pools)
 
-    save_to_mlflow(
-        dict_params, dict_metrics, dict_tags, figs,
-        model, X_transformed.sample(100), y_pred_test
-    )
-
-    logger.info("All done!")
+    # hyperparameter tuning
+    with mlflow.start_run():
+        study = optuna.create_study(
+            direction='minimize',
+            sampler=optuna.samplers.TPESampler(seed=42),
+            pruner=optuna.pruners.MedianPruner(n_warmup_steps=10)
+        )
+        study.optimize(
+            lambda trial: objective(
+                trial, pools, config_model, transformer
+            ),
+            n_trials=10,
+            show_progress_bar=True
+        )
+        logger.info("Hyperparameter tuning completed. Bye!!")
 
 
 if __name__ == '__main__':
