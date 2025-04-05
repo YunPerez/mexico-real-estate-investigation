@@ -1,35 +1,41 @@
 """
 @roman_avj
-18/3/25
+5/4/25
 
-This module is used to train a CatBoost model saving the experiments to local MLFlow server.
+This module is used to train a CatBoost model and hypertune it using Optuna.
 """
-# add the tag of type of transformation to the objective variable
-# %% Imports
+# Imports
 import joblib
 import logging
 import warnings
 import yaml
-
-import matplotlib.pyplot as plt
-import seaborn as sns
-from matplotlib import ticker
 
 import mlflow
 from mlflow.models import infer_signature
 
 import numpy as np
 import pandas as pd
-import shap
-from catboost import CatBoostRegressor, Pool
+import catboost as cb
+import optuna
+from optuna.integration import CatBoostPruningCallback
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import PowerTransformer, StandardScaler
+from sklearn.metrics import mean_absolute_percentage_error
+
 
 # Settings
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning, module="mlflow.catboost")
+
+# Optuna
+optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 # dir
 DIR_DATA = '../../data'
@@ -381,7 +387,7 @@ class FeatureTransformer:
         )
 
 
-# split data
+# split data and prepare CatBoost data format
 def split_randomly_data(X, y, config, categorical_features=None):
     """
     Split data into train, validation, and test sets based on the provided configuration.
@@ -393,10 +399,10 @@ def split_randomly_data(X, y, config, categorical_features=None):
             - train_size (float): Proportion of data for training.
             - stratify (str or None): Column name for stratification.
             - validation_size (float or None): Proportion of training data for validation.
-        categorical_features (list or None): List of categorical feature indices.
+        categorical_features (list or None): List of categorical feature names.
 
     Returns:
-        dict: A dictionary containing CatBoost Pool objects for train, validation, and test sets.
+        dict: A dictionary containing the train, validation, and test sets as DataFrames/Series.
     """
     # Split train and test
     stratify_col = X[config['stratify']] if config.get('stratify') else None
@@ -410,7 +416,7 @@ def split_randomly_data(X, y, config, categorical_features=None):
     # Split validation set if specified
     val_percentage = config.get('validation_size')
     if val_percentage and val_percentage > 0:
-        stratify_col_train = X_train[config['stratify']] if config.get('stratify') else None
+        stratify_col_train = X_train[config['stratify']] if config.get('stratify') and config['stratify'] in X_train else None
         X_train, X_val, y_train, y_val = train_test_split(
             X_train, y_train,
             test_size=val_percentage,
@@ -420,34 +426,190 @@ def split_randomly_data(X, y, config, categorical_features=None):
     else:
         X_val, y_val = None, None
 
+    # Create CatBoost Pool objects
+    train_pool = cb.Pool(
+        X_train,
+        y_train,
+        cat_features=categorical_features
+    )
+
+    test_pool = cb.Pool(
+        X_test,
+        y_test,
+        cat_features=categorical_features
+    )
+
+    val_pool = cb.Pool(
+        X_val,
+        y_val,
+        cat_features=categorical_features
+    ) if X_val is not None else None
+
     return {
-        'train': Pool(X_train, y_train, cat_features=categorical_features),
-        'validation': Pool(X_val, y_val, cat_features=categorical_features) if X_val is not None else None,
-        'test': Pool(X_test, y_test, cat_features=categorical_features)
+        'train': train_pool,
+        'validation': val_pool,
+        'test': test_pool
     }
 
 
-# train model
-def train_catboost_model(pools, config):
+# hyperoptimization
+def create_mlflow_dicts_hyperopt(params, config_model, pools, mape):
     """
-    Train a CatBoost model using the provided data pools and configuration.
+    Create dictionaries for parameters, metrics, and tags to upload to MLFlow.
 
     Args:
-        pools (dict): A dictionary containing CatBoost Pool objects for train, validation, and test sets.
-        config (dict): Configuration dictionary containing:
-            - model (dict): CatBoost model hyperparameters.
-            - mlflow (dict): MLFlow configuration settings.
+        config_model (dict): Configuration dictionary for the model.
+        tbl (pd.DataFrame): Table containing metrics for train, validation, and test sets.
+        pools (dict): Dictionary containing CatBoost Pool objects for train, validation, and test sets.
+
+    Returns:
+        tuple: A tuple containing three dictionaries (parameters, metrics, tags).
+    """
+    # s1: parameters
+    dict_params = {
+        f"hyperparameters__{k}": v
+        for k, v in params.items()
+    }
+
+    # s2: create metrics
+    dict_metrics = {
+        "n_features": pools['train'].num_col(),
+        "test__mape": mape
+    }
+
+    # s3: tags
+    dict_tags = {
+        'model': config_model['model_name'],
+        'purpose': config_model['purpose'],
+        'target': list(config_model['target'].keys())[0],
+        'split_type': config_model['data']['split_type'],
+        'objective_variable_transformation': config_model['target'].get(
+            list(config_model['target'].keys())[0]
+        ),
+    }
+
+    return dict_params, dict_metrics, dict_tags
+
+
+def save_to_mlflow_hyperopt(
+        dict_params, dict_metrics, dict_tags, model, X_sample, y_sample
+        ):
+    """
+    Save model parameters, metrics, tags, plots, and the model itself to MLFlow.
+
+    Args:
+        dict_params (dict): Model parameters to log.
+        dict_metrics (dict): Model metrics to log.
+        dict_tags (dict): Tags to set in MLFlow.
+        figs (dict): Dictionary of matplotlib figures to log as artifacts.
+        model (CatBoostRegressor): Trained CatBoost model.
+        X_sample (pd.DataFrame): Sample of features for signature inference.
+        y_sample (pd.Series): Sample of target values for signature inference.
+    """
+    with mlflow.start_run(nested=True):
+        # Log parameters
+        mlflow.log_params(dict_params)
+
+        # Log metrics
+        mlflow.log_metrics(dict_metrics)
+
+        # Set tags
+        mlflow.set_tags(dict_tags)
+
+        # Log the model
+        signature = infer_signature(X_sample, y_sample)
+        mlflow.catboost.log_model(
+            model,
+            artifact_path="models",
+            signature=signature,
+        )
+
+
+def objective(trial, data_dict, config, transformer):
+    """
+    Objective function for Optuna to optimize hyperparameters of the CatBoost model.
+
+    Args:
+        trial (optuna.Trial): Optuna trial object.
+        data_dict (dict): A dictionary containing data for train, validation, and test sets.
+        config (dict): Configuration dictionary containing model hyperparameters.
+
+    Returns:
+        float: The mean absolute percentage error (MAPE) of the model on the validation set.
+    """
+    # Update hyperparameters based on the trial
+    params = config['hyperparameters'].copy()
+
+    # Define hyperparameters to tune
+    params = {
+        # tunning
+        'loss_function': trial.suggest_categorical('loss_function', ['RMSE', 'MAE', 'MAPE']),
+        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.4),
+        'max_depth': trial.suggest_int('max_depth', 3, 10),
+        'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 1e-8, 10),
+        # fixed
+        'eval_metric': 'MAE',
+        'iterations': 1000,
+        'random_seed': 42,
+        'verbose': 0,
+        'thread_count': -1,
+        'use_best_model': True,
+        'early_stopping_rounds': 25,
+    }
+
+    # Train the model
+    model = cb.CatBoostRegressor(**params)
+    pruning_callback = CatBoostPruningCallback(trial, 'MAE')
+
+    model.fit(
+        data_dict['train'],
+        eval_set=data_dict['validation'],
+        callbacks=[pruning_callback]
+    )
+
+    # Make predictions
+    y_obs_test = get_target_value(
+        data_dict['test'].get_label(),
+        transformer
+    )
+    y_pred_test = get_predictions(
+        model, data_dict['test'], transformer
+    )
+
+    # Evaluate the model
+    mape = mean_absolute_percentage_error(y_obs_test, y_pred_test)
+
+    # Save the model to MLFlow
+    dict_params, dict_metrics, dict_tags = create_mlflow_dicts_hyperopt(
+        params, config, data_dict, mape
+    )
+    save_to_mlflow_hyperopt(
+        dict_params, dict_metrics, dict_tags,
+        model,
+        data_dict['test'].get_features()[:10],
+        y_obs_test[:10]
+    )
+    return mape
+
+
+def train_catboost_model(data_dict, params):
+    """
+    Train a CatBoost model using the provided data pools and params.
+
+    Args:
+        data_dict (dict): A dictionary containing data for train, validation, and test sets.
+        params  (dict): Configuration dictionary containing model hyperparameters.
 
     Returns:
         CatBoostRegressor: A trained CatBoost model.
     """
-    # Initialize CatBoost model
-    model = CatBoostRegressor(**config['hyperparameters'])
-
     # Train the model
+    model = cb.CatBoostRegressor(**params)
     model.fit(
-        pools['train'],
-        eval_set=pools['validation']
+        data_dict['train'],
+        eval_set=data_dict['validation'],
+        early_stopping_rounds=25,
+        verbose=100
     )
 
     return model
@@ -486,170 +648,6 @@ def calculate_metrics(y, y_pred, best_percent=1.0):
         "worst_negative_error": worst_negative_error,
         "worst_positive_error": worst_positive_error
     })
-
-
-# plots
-def plot_y(y):
-    with plt.style.context(style='tableau-colorblind10'):
-        fig, ax = plt.subplots(1, 2, figsize=(14, 6))
-        sns.histplot(y, kde=True, ax=ax[0])
-        ax[0].set_title('Histogram of y transformed')
-        ax[0].set_xlabel('y')
-        ax[0].set_ylabel('Frequency')
-
-        sns.boxplot(y, ax=ax[1])
-        ax[1].set_title('Boxplot of y transformed')
-        ax[1].set_xlabel('y')
-
-        plt.tight_layout()
-    plt.close(fig)
-    return fig
-
-
-def plot_error_histogram(y, y_pred):
-    # create error
-    error = 1 - y_pred / y
-
-    # plot
-    with plt.style.context(style='tableau-colorblind10'):
-        fig, ax = plt.subplots(figsize=(10, 6))
-        sns.histplot(
-            error,
-            kde=False,
-            bins=50,
-            label='Percentual Error'
-        )
-
-        # labels
-        plt.xlabel('Percentual Error')
-        plt.ylabel('Frequency')
-        plt.title('Error Histogram')
-
-        # x ticks in percentage
-        plt.gca().xaxis.set_major_formatter(ticker.PercentFormatter(1, decimals=0))
-        plt.tight_layout()
-
-    # save
-    plt.close(fig)
-    return fig
-
-
-def plot_feature_importance(model, X, n_size):
-    explainer = shap.TreeExplainer(model)
-
-    # shap values
-    shap_values = explainer.shap_values(X)
-
-    # plot
-    with plt.style.context(style='tableau-colorblind10'):
-        fig, ax = plt.subplots(figsize=(12, 8))
-        shap.summary_plot(
-            shap_values,
-            X,
-            max_display=n_size,
-            show=False
-        )
-        plt.tight_layout()
-    plt.close(fig)
-    return fig
-
-
-def plot_results_table(tbl):
-    # roand to decimals
-    tbl = tbl.round(4)
-
-    # plot
-    with plt.style.context(style='tableau-colorblind10'):
-        fig, ax = plt.subplots()
-
-        # remove axis
-        ax.axis('off')
-        ax.axis('tight')
-
-        # plot table
-        ax.table(
-            cellText=tbl.values,
-            colLabels=tbl.columns,
-            rowLabels=tbl.index,
-            loc='center'
-        )
-        plt.tight_layout()
-    plt.close(fig)
-    return fig
-
-
-def plot_predicted_vs_real(y, y_pred):
-    # residuals
-    residuals = y - y_pred
-
-    # plot
-    with plt.style.context(style='tableau-colorblind10'):
-        # y pred vs y
-        fig, ax = plt.subplots(1, 3, figsize=(14, 6))
-        sns.scatterplot(y=y, x=y_pred, ax=ax[0])
-        ax[0].set_title('Predicted vs Real')
-        ax[0].set_xlabel('Real')
-        ax[0].set_ylabel('Predicted')
-        # add identity
-        ax[0].plot([y.min(), y.max()], [y.min(), y.max()], color='gray', lw=2, linestyle='--')
-        # add regression line
-        sns.regplot(y=y, x=y_pred, ax=ax[0], scatter=False, color='red')
-        # x ticks 90 degrees
-        ax[0].tick_params(axis='x', rotation=90)
-
-        # residuals
-        sns.scatterplot(x=y, y=residuals, ax=ax[1])
-        ax[1].set_title('Residuals vs Real')
-        ax[1].set_xlabel('Real')
-        ax[1].set_ylabel('Residuals')
-        # add zero line
-        ax[1].axhline(0, color='gray', lw=2, linestyle='--')
-        # x ticks 90 degrees
-        ax[1].tick_params(axis='x', rotation=90)
-
-        # percentual error
-        sns.scatterplot(x=y, y=residuals / y, ax=ax[2])
-        ax[2].set_title('Percentual Error vs Real')
-        ax[2].set_xlabel('Real')
-        ax[2].set_ylabel('Percentual Error')
-        # add zero line
-        ax[2].axhline(0, color='gray', lw=2, linestyle='--')
-        # y label in percentage
-        ax[2].yaxis.set_major_formatter(ticker.PercentFormatter(1, decimals=0))
-        # x ticks 90 degrees
-        ax[2].tick_params(axis='x', rotation=90)
-
-        plt.tight_layout()
-    plt.close(fig)
-    return fig
-
-
-def plot_feature_importance_in_table(model):
-    # get feature importance
-    df_feature_importance = pd.DataFrame({
-        'feature': model.feature_names_,
-        'importance': model.feature_importances_
-    }).round(4)
-
-    df_feature_importance = df_feature_importance.sort_values('importance', ascending=False, ignore_index=True)
-
-    # plot
-    with plt.style.context(style='tableau-colorblind10'):
-        fig, ax = plt.subplots(figsize=(10, 10))
-
-        # remove axis
-        ax.axis('off')
-        ax.axis('tight')
-
-        # plot table
-        ax.table(
-            cellText=df_feature_importance.values,
-            colLabels=df_feature_importance.columns,
-            loc='center'
-        )
-        plt.tight_layout()
-    plt.close(fig)
-    return fig
 
 
 def create_mlflow_dicts(config_model, tbl, pools):
@@ -691,7 +689,7 @@ def create_mlflow_dicts(config_model, tbl, pools):
         if k not in ['worst_negative_error', 'worst_positive_error', 'meape', 'r2']
     })
     dict_metrics.update({
-        "n_features": pools['train'].shape[1]
+        "n_features": pools['train'].num_col(),
     })
 
     # s3: tags
@@ -723,27 +721,26 @@ def save_to_mlflow(
         X_sample (pd.DataFrame): Sample of features for signature inference.
         y_sample (pd.Series): Sample of target values for signature inference.
     """
-    with mlflow.start_run():
-        # Log parameters
-        mlflow.log_params(dict_params)
+    # Log parameters
+    mlflow.log_params(dict_params)
 
-        # Log metrics
-        mlflow.log_metrics(dict_metrics)
+    # Log metrics
+    mlflow.log_metrics(dict_metrics)
 
-        # Set tags
-        mlflow.set_tags(dict_tags)
+    # Set tags
+    mlflow.set_tags(dict_tags)
 
-        # Log figures
-        for fig_name, fig in figs.items():
-            mlflow.log_figure(fig, f"{fig_name}.png")
+    # Log figures
+    for fig_name, fig in figs.items():
+        mlflow.log_figure(fig, f"{fig_name}.png")
 
-        # Log the model
-        signature = infer_signature(X_sample, y_sample)
-        mlflow.catboost.log_model(
-            model,
-            artifact_path="models",
-            signature=signature
-        )
+    # Log the model
+    signature = infer_signature(X_sample, y_sample)
+    mlflow.catboost.log_model(
+        model,
+        artifact_path="models",
+        signature=signature
+    )
 
 
 # main
@@ -772,53 +769,28 @@ def main():
         categorical_features=transformer.get_transformers()['categorical']
     )
     # delete X, y to free memory
-    del X, y
+    del X, y, X_transformed, y_transformed
 
-    # S4: Train CatBoost model
-    logger.info("Training CatBoost model...")
-    model = train_catboost_model(pools, config_model)
-
-    # S5: Calculate metrics
-    logger.info("Calculating metrics...")
-    y_obs_test = get_target_value(
-        pools['test'].get_label(),
-        transformer
-    )
-    y_pred_test = get_predictions(model, pools['test'], transformer)
-    tbl_results = pd.DataFrame({
-        k: calculate_metrics(
-            y=get_target_value(v.get_label(), transformer),
-            y_pred=get_predictions(model, v, transformer),
-            best_percent=config_model['data'].get('best_percentage')
-        )
-        for k, v in pools.items()
-    })
-    logger.info("Test MAPE: {:.4f}".format(tbl_results.loc['mape', 'test']))
-
-    # S6: Plot results
-    logger.info("Plotting results...")
-    figs = {
-        "y_transformed": plot_y(y_transformed),
-        "error_histogram": plot_error_histogram(y_obs_test, y_pred_test),
-        "feature_importance": plot_feature_importance(model, X_transformed.sample(10_000), n_size=10),
-        "results_table": plot_results_table(tbl_results),
-        "predicted_vs_real": plot_predicted_vs_real(y_obs_test, y_pred_test),
-        "feature_importance_table": plot_feature_importance_in_table(model)
-    }
-
-    # S7: Save results to MLFlow
-    # Set up MLFlow
-    logger.info("Saving results to MLFlow")
+    # S4: Hyperparameter tuning
+    logger.info("Starting hyperparameter tuning...")
     mlflow.set_tracking_uri(f"http://{mlflow_config['host']}:{mlflow_config['port']}")
     mlflow.set_experiment(mlflow_config['experiment_name'])
-    dict_params, dict_metrics, dict_tags = create_mlflow_dicts(config_model, tbl_results, pools)
-    # Save to MLFlow
-    save_to_mlflow(
-        dict_params, dict_metrics, dict_tags, figs,
-        model, X_transformed.sample(100), y_pred_test
-    )
 
-    logger.info("All done!")
+    # hyperparameter tuning
+    with mlflow.start_run():
+        study = optuna.create_study(
+            direction='minimize',
+            sampler=optuna.samplers.TPESampler(seed=42),
+            pruner=optuna.pruners.MedianPruner(n_warmup_steps=10)
+        )
+        study.optimize(
+            lambda trial: objective(
+                trial, pools, config_model, transformer
+            ),
+            n_trials=10,
+            show_progress_bar=True
+        )
+        logger.info("Hyperparameter tuning completed. Bye!!")
 
 
 if __name__ == '__main__':

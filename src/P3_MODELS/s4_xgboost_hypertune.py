@@ -4,29 +4,24 @@
 
 This module is used to train an XGBoost and hypertune it using Optuna.
 """
-# %% Imports
+# Imports
 import joblib
 import logging
 import warnings
 import yaml
-
-import matplotlib.pyplot as plt
-import seaborn as sns
-from matplotlib import ticker
 
 import mlflow
 from mlflow.models import infer_signature
 
 import numpy as np
 import pandas as pd
-import shap
 import xgboost as xgb
 import optuna
+from optuna.integration import XGBoostPruningCallback
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import PowerTransformer, StandardScaler
 from sklearn.metrics import mean_absolute_percentage_error
-import warnings
 
 
 # Settings
@@ -570,12 +565,8 @@ def objective(trial, data_dict, config, transformer):
     })
 
     # Callback: early stopping
-    pruning_callback = optuna.integration.XGBoostPruningCallback(
-        trial, 'validation-mae'
-        )
-    evals = [
-        (data_dict['validation'], 'validation')
-    ]
+    pruning_callback = XGBoostPruningCallback(trial, 'validation-mae')
+    evals = [(data_dict['validation'], 'validation')]
 
     # Train the model
     model = xgb.train(
@@ -675,169 +666,6 @@ def calculate_metrics(y, y_pred, best_percent=1.0):
 
 
 # plots
-def plot_y(y):
-    with plt.style.context(style='tableau-colorblind10'):
-        fig, ax = plt.subplots(1, 2, figsize=(14, 6))
-        sns.histplot(y, kde=True, ax=ax[0])
-        ax[0].set_title('Histogram of y transformed')
-        ax[0].set_xlabel('y')
-        ax[0].set_ylabel('Frequency')
-
-        sns.boxplot(y, ax=ax[1])
-        ax[1].set_title('Boxplot of y transformed')
-        ax[1].set_xlabel('y')
-
-        plt.tight_layout()
-    plt.close(fig)
-    return fig
-
-
-def plot_error_histogram(y, y_pred):
-    # create error
-    error = 1 - y_pred / y
-
-    # plot
-    with plt.style.context(style='tableau-colorblind10'):
-        fig, ax = plt.subplots(figsize=(10, 6))
-        sns.histplot(
-            error,
-            kde=False,
-            bins=50,
-            label='Percentual Error'
-        )
-
-        # labels
-        plt.xlabel('Percentual Error')
-        plt.ylabel('Frequency')
-        plt.title('Error Histogram')
-
-        # x ticks in percentage
-        plt.gca().xaxis.set_major_formatter(ticker.PercentFormatter(1, decimals=0))
-        plt.tight_layout()
-
-    # save
-    plt.close(fig)
-    return fig
-
-
-def plot_feature_importance(model, X, n_size):
-    # get X_df from dmatrix
-    X_df = pd.DataFrame(X.get_data().toarray(), columns=X.feature_names)
-
-    # explainer
-    explainer = shap.TreeExplainer(model)
-    shap_values = explainer.shap_values(X)
-
-    # plot
-    with plt.style.context(style='tableau-colorblind10'):
-        fig, ax = plt.subplots(figsize=(12, 8))
-        shap.summary_plot(
-            shap_values,
-            X_df,
-            max_display=n_size,
-            show=False
-        )
-        plt.tight_layout()
-    plt.close(fig)
-    return fig
-
-
-def plot_results_table(tbl):
-    # roand to decimals
-    tbl = tbl.round(4)
-
-    # plot
-    with plt.style.context(style='tableau-colorblind10'):
-        fig, ax = plt.subplots()
-
-        # remove axis
-        ax.axis('off')
-        ax.axis('tight')
-
-        # plot table
-        ax.table(
-            cellText=tbl.values,
-            colLabels=tbl.columns,
-            rowLabels=tbl.index,
-            loc='center'
-        )
-        plt.tight_layout()
-    plt.close(fig)
-    return fig
-
-
-def plot_predicted_vs_real(y, y_pred):
-    # residuals
-    residuals = y - y_pred
-
-    # plot
-    with plt.style.context(style='tableau-colorblind10'):
-        # y pred vs y
-        fig, ax = plt.subplots(1, 3, figsize=(14, 6))
-        sns.scatterplot(y=y, x=y_pred, ax=ax[0])
-        ax[0].set_title('Predicted vs Real')
-        ax[0].set_xlabel('Real')
-        ax[0].set_ylabel('Predicted')
-        # add identity
-        ax[0].plot([y.min(), y.max()], [y.min(), y.max()], color='gray', lw=2, linestyle='--')
-        # add regression line
-        sns.regplot(y=y, x=y_pred, ax=ax[0], scatter=False, color='red')
-        # x ticks 90 degrees
-        ax[0].tick_params(axis='x', rotation=90)
-
-        # residuals
-        sns.scatterplot(x=y, y=residuals, ax=ax[1])
-        ax[1].set_title('Residuals vs Real')
-        ax[1].set_xlabel('Real')
-        ax[1].set_ylabel('Residuals')
-        # add zero line
-        ax[1].axhline(0, color='gray', lw=2, linestyle='--')
-        # x ticks 90 degrees
-        ax[1].tick_params(axis='x', rotation=90)
-
-        # percentual error
-        sns.scatterplot(x=y, y=residuals / y, ax=ax[2])
-        ax[2].set_title('Percentual Error vs Real')
-        ax[2].set_xlabel('Real')
-        ax[2].set_ylabel('Percentual Error')
-        # add zero line
-        ax[2].axhline(0, color='gray', lw=2, linestyle='--')
-        # y label in percentage
-        ax[2].yaxis.set_major_formatter(ticker.PercentFormatter(1, decimals=0))
-        # x ticks 90 degrees
-        ax[2].tick_params(axis='x', rotation=90)
-
-        plt.tight_layout()
-    plt.close(fig)
-    return fig
-
-
-def plot_feature_importance_in_table(model):
-    # For XGBoost, use feature_importances_ or get_score
-    df_feature_importance = pd.DataFrame(
-        model.get_score(importance_type='gain').items(),
-        columns=['feature', 'importance']
-    ).sort_values('importance', ascending=False)
-
-    # plot
-    with plt.style.context(style='tableau-colorblind10'):
-        fig, ax = plt.subplots(figsize=(10, 10))
-
-        # remove axis
-        ax.axis('off')
-        ax.axis('tight')
-
-        # plot table
-        ax.table(
-            cellText=df_feature_importance.values,
-            colLabels=df_feature_importance.columns,
-            loc='center'
-        )
-        plt.tight_layout()
-    plt.close(fig)
-    return fig
-
-
 def create_mlflow_dicts(config_model, tbl, pools):
     """
     Create dictionaries for parameters, metrics, and tags to upload to MLFlow.
@@ -957,7 +785,7 @@ def main():
         categorical_features=transformer.get_transformers()['categorical']
     )
     # delete X, y to free memory
-    del X, y
+    del X, y, X_transformed, y_transformed
 
     # S4: Hyperparameter tuning
     logger.info("Starting hyperparameter tuning...")
@@ -975,7 +803,7 @@ def main():
             lambda trial: objective(
                 trial, pools, config_model, transformer
             ),
-            n_trials=10,
+            n_trials=100,
             show_progress_bar=True
         )
         logger.info("Hyperparameter tuning completed. Bye!!")
