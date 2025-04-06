@@ -1,10 +1,10 @@
 """
 @roman_avj
-31/3/25
+5/4/25
 
-This module is used to train an XGBoost model saving the experiments to local MLFlow server.
+This module is used to train a Regression Tree
 """
-# Imports
+# %% Imports
 import joblib
 import logging
 import warnings
@@ -20,15 +20,20 @@ from mlflow.models import infer_signature
 import numpy as np
 import pandas as pd
 import shap
-import xgboost as xgb
+from sklearn.tree import DecisionTreeRegressor, plot_tree
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import PowerTransformer, StandardScaler
+
 
 # Settings
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 # dir
 DIR_DATA = '../../data'
@@ -380,7 +385,7 @@ class FeatureTransformer:
         )
 
 
-# split data and prepare XGBoost data format
+# split data and prepare CatBoost data format
 def split_randomly_data(X, y, config, categorical_features=None):
     """
     Split data into train, validation, and test sets based on the provided configuration.
@@ -395,12 +400,11 @@ def split_randomly_data(X, y, config, categorical_features=None):
         categorical_features (list or None): List of categorical feature names.
 
     Returns:
-        dict: A dictionary containing the train, validation, and test sets as DataFrames/Series and 
-              corresponding DMatrix objects for XGBoost.
+        dict: A dictionary containing the train, validation, and test sets as DataFrames/Series.
     """
-    # For XGBoost, we need to encode categorical features
+    # For DecisionTree, we need to encode categorical features
     X_encoded = X.copy()
-    
+
     # Convert categorical features to numeric using one-hot encoding
     if categorical_features:
         for col in categorical_features:
@@ -432,52 +436,37 @@ def split_randomly_data(X, y, config, categorical_features=None):
     else:
         X_val, y_val = None, None
 
-    # Create DMatrix objects for XGBoost
-    dtrain = xgb.DMatrix(X_train, label=y_train, enable_categorical=True)
-    dtest = xgb.DMatrix(X_test, label=y_test, enable_categorical=True)
-    dval = xgb.DMatrix(X_val, label=y_val, enable_categorical=True) if X_val is not None else None
-
-    return {
-        'train': dtrain,
-        'validation': dval,
-        'test': dtest
-    }
+    if X_val is not None:
+        return {
+            'train': (X_train, y_train),
+            'val': (X_val, y_val),
+            'test': (X_test, y_test)
+        }
+    else:
+        return {
+            'train': (X_train, y_train),
+            'test': (X_test, y_test)
+        }
 
 
 # train model
-def train_xgboost_model(data_dict, config):
+def train_regtree_model(data_dict, config):
     """
-    Train an XGBoost model using the provided data pools and configuration.
+    Train a regression tree model using the provided data and configuration.
 
     Args:
-        data_dict (dict): A dictionary containing data for train, validation, and test sets.
-        config (dict): Configuration dictionary containing model hyperparameters.
+        data_dict (dict): Dictionary containing the train, validation, and test sets.
+        config (dict): Configuration dictionary containing model parameters.
 
     Returns:
-        XGBRegressor: A trained XGBoost model.
+        DecisionTreeRegressor: The trained regression tree model.
     """
-    # Initialize XGBoost model
+    # Init model
     params = config['hyperparameters'].copy()
-    training_params = config['training'].copy()
 
-    # Set up early stopping if validation set is provided
-    if data_dict['validation'] is not None:
-        evalset = [
-            (data_dict['validation'], 'validation'),
-        ]
-        model = xgb.train(
-            params,
-            data_dict['train'],
-            evals=evalset,
-            **training_params
-        )
-    else:
-        model = xgb.train(
-            params,
-            data_dict['train'],
-            evals=None,
-            **training_params
-        )
+    # Set up the model
+    model = DecisionTreeRegressor(**params)
+    model.fit(data_dict['train'][0], data_dict['train'][1])
 
     return model
 
@@ -563,28 +552,6 @@ def plot_error_histogram(y, y_pred):
     return fig
 
 
-def plot_feature_importance(model, X, n_size):
-    # get X_df from dmatrix
-    X_df = pd.DataFrame(X.get_data().toarray(), columns=X.feature_names)
-
-    # explainer
-    explainer = shap.TreeExplainer(model)
-    shap_values = explainer.shap_values(X)
-
-    # plot
-    with plt.style.context(style='tableau-colorblind10'):
-        fig, ax = plt.subplots(figsize=(12, 8))
-        shap.summary_plot(
-            shap_values,
-            X_df,
-            max_display=n_size,
-            show=False
-        )
-        plt.tight_layout()
-    plt.close(fig)
-    return fig
-
-
 def plot_results_table(tbl):
     # roand to decimals
     tbl = tbl.round(4)
@@ -655,40 +622,42 @@ def plot_predicted_vs_real(y, y_pred):
     return fig
 
 
-def plot_feature_importance_in_table(model):
-    # For XGBoost, use feature_importances_ or get_score
-    df_feature_importance = pd.DataFrame(
-        model.get_score(importance_type='gain').items(),
-        columns=['feature', 'importance']
-    ).sort_values('importance', ascending=False)
+def plot_tree_path(model, feature_names):
+    """
+    Plot the decision tree.
 
-    # plot
+    Args:
+        model (DecisionTreeRegressor): Trained decision tree model.
+        feature_names (list): List of feature names.
+
+    Returns:
+        matplotlib.figure.Figure: Figure object containing the plot.
+    """
     with plt.style.context(style='tableau-colorblind10'):
-        fig, ax = plt.subplots(figsize=(10, 10))
-
-        # remove axis
-        ax.axis('off')
-        ax.axis('tight')
-
-        # plot table
-        ax.table(
-            cellText=df_feature_importance.values,
-            colLabels=df_feature_importance.columns,
-            loc='center'
+        fig, ax = plt.subplots(figsize=(12, 8))
+        plot_tree(
+            model,
+            feature_names=feature_names,
+            filled=True,
+            fontsize=10,
+            ax=ax,
+            rounded=True,
+            precision=2
         )
+        plt.title('Decision Tree')
         plt.tight_layout()
     plt.close(fig)
     return fig
 
 
-def create_mlflow_dicts(config_model, tbl, pools):
+def create_mlflow_dicts(config_model, tbl, data_dict):
     """
     Create dictionaries for parameters, metrics, and tags to upload to MLFlow.
 
     Args:
         config_model (dict): Configuration dictionary for the model.
         tbl (pd.DataFrame): Table containing metrics for train, validation, and test sets.
-        pools (dict): Dictionary containing XGBoost Pool objects for train, validation, and test sets.
+        data_dict (dict): Dictionary containing Reg Tree Pool objects for train, validation, and test sets.
 
     Returns:
         tuple: A tuple containing three dictionaries (parameters, metrics, tags).
@@ -720,7 +689,7 @@ def create_mlflow_dicts(config_model, tbl, pools):
         if k not in ['worst_negative_error', 'worst_positive_error', 'meape', 'r2']
     })
     dict_metrics.update({
-        "n_features": pools['train'].num_col(),
+        "n_features": data_dict['train'][0].shape[1]
     })
 
     # s3: tags
@@ -748,7 +717,7 @@ def save_to_mlflow(
         dict_metrics (dict): Model metrics to log.
         dict_tags (dict): Tags to set in MLFlow.
         figs (dict): Dictionary of matplotlib figures to log as artifacts.
-        model (XGBoostRegressor): Trained XGBoost model.
+        model (Regressor): Trained Reg Tree model.
         X_sample (pd.DataFrame): Sample of features for signature inference.
         y_sample (pd.Series): Sample of target values for signature inference.
     """
@@ -768,90 +737,85 @@ def save_to_mlflow(
 
         # Log the model
         signature = infer_signature(X_sample, y_sample)
-        mlflow.xgboost.log_model(
+        mlflow.sklearn.log_model(
             model,
             artifact_path="models",
-            signature=signature
+            signature=signature,
         )
 
 
 # main
-def main():
-    # S0: Load configurations
-    logger.info("Loading configurations...")
-    config_model, recaster_mappers, mlflow_config = get_configs('config_xgb.yaml')
+# def main():
+# %% S0: Load configurations
+logger.info("Loading configurations...")
+config_model, recaster_mappers, mlflow_config = get_configs('config_regtree.yaml')
 
-    # S1: Read data
-    logger.info("Reading data...")
-    X, y = read_data(FILE_PROPERTIES, config_model)
-    logger.info(f"Data read successfully. X shape: {X.shape}, y shape: {y.shape}")
+# %% S1: Read data
+logger.info("Reading data...")
+X, y = read_data(FILE_PROPERTIES, config_model)
+logger.info(f"Data read successfully. X shape: {X.shape}, y shape: {y.shape}")
 
-    # S2: Feature engineering
-    logger.info("Applying feature engineering...")
-    transformer = FeatureTransformer(config_model, recaster_mappers)
-    X_transformed, y_transformed = transformer.fit_transform(X, y)
-    logger.info(f"Feature engineering completed. X shape: {X_transformed.shape}, y shape: {y_transformed.shape}")
+# %% S2: Feature engineering
+logger.info("Applying feature engineering...")
+transformer = FeatureTransformer(config_model, recaster_mappers)
+X_transformed, y_transformed = transformer.fit_transform(X, y)
+logger.info(f"Feature engineering completed. X shape: {X_transformed.shape}, y shape: {y_transformed.shape}")
 
-    # S3: Train-test split
-    logger.info("Splitting data into train-test sets...")
-    pools = split_randomly_data(
-        X_transformed,
-        y_transformed,
-        config_model['data'],
-        categorical_features=transformer.get_transformers()['categorical']
+# %% S3: Train-test split
+logger.info("Splitting data into train-test sets...")
+pools = split_randomly_data(
+    X_transformed,
+    y_transformed,
+    config_model['data'],
+    categorical_features=transformer.get_transformers()['categorical']
+)
+# delete X, y to free memory
+del X, y, X_transformed
+
+# %% S4: Train Reg Tree model
+logger.info("Training Reg Tree model...")
+model = train_regtree_model(pools, config_model)
+
+# %% S5: Calculate metrics
+logger.info("Calculating metrics...")
+y_obs_test = get_target_value(
+    pools['test'][1].to_numpy(),
+    transformer
+)
+y_pred_test = get_predictions(model, pools['test'][0], transformer)
+tbl_results = pd.DataFrame({
+    k: calculate_metrics(
+        y=get_target_value(v[1].to_numpy(), transformer),
+        y_pred=get_predictions(model, v[0], transformer),
+        best_percent=config_model['data'].get('best_percentage')
     )
-    # delete X, y to free memory
-    del X, y
+    for k, v in pools.items()
+})
+logger.info("Test MAPE: {:.4f}".format(tbl_results.loc['mape', 'test']))
 
-    # S4: Train XGBoost model
-    logger.info("Training XGBoost model...")
-    model = train_xgboost_model(pools, config_model)
+# %% S6: Plot results
+logger.info("Plotting results...")
+figs = {
+    "y_transformed": plot_y(y_transformed),
+    "error_histogram": plot_error_histogram(y_obs_test, y_pred_test),
+    "results_table": plot_results_table(tbl_results),
+    "predicted_vs_real": plot_predicted_vs_real(y_obs_test, y_pred_test),
+    "tree_path": plot_tree_path(model, pools['train'][0].columns),
+}
 
-    # S5: Calculate metrics
-    logger.info("Calculating metrics...")
-    y_obs_test = get_target_value(
-        pools['test'].get_label(),
-        transformer
-    )
-    y_pred_test = get_predictions(model, pools['test'], transformer)
-    tbl_results = pd.DataFrame({
-        k: calculate_metrics(
-            y=get_target_value(v.get_label(), transformer),
-            y_pred=get_predictions(model, v, transformer),
-            best_percent=config_model['data'].get('best_percentage')
-        )
-        for k, v in pools.items()
-    })
-    logger.info("Test MAPE: {:.4f}".format(tbl_results.loc['mape', 'test']))
+# %% S7: Save results to MLFlow
+logger.info("Saving results to MLFlow")
+mlflow.set_tracking_uri(f"http://{mlflow_config['host']}:{mlflow_config['port']}")
+mlflow.set_experiment(mlflow_config['experiment_name'])
+dict_params, dict_metrics, dict_tags = create_mlflow_dicts(config_model, tbl_results, pools)
 
-    # S6: Plot results
-    logger.info("Plotting results...")
-    figs = {
-        "y_transformed": plot_y(y_transformed),
-        "error_histogram": plot_error_histogram(y_obs_test, y_pred_test),
-        "feature_importance": plot_feature_importance(
-            model,
-            pools['train'].slice(np.arange(10_000)),
-            n_size=10
-            ),
-        "results_table": plot_results_table(tbl_results),
-        "predicted_vs_real": plot_predicted_vs_real(y_obs_test, y_pred_test),
-        "feature_importance_table": plot_feature_importance_in_table(model)
-    }
+save_to_mlflow(
+    dict_params, dict_metrics, dict_tags, figs,
+    model, pools['train'][0].sample(100), y_pred_test
+)
 
-    # S7: Save results to MLFlow
-    logger.info("Saving results to MLFlow")
-    mlflow.set_tracking_uri(f"http://{mlflow_config['host']}:{mlflow_config['port']}")
-    mlflow.set_experiment(mlflow_config['experiment_name'])
-    dict_params, dict_metrics, dict_tags = create_mlflow_dicts(config_model, tbl_results, pools)
-
-    save_to_mlflow(
-        dict_params, dict_metrics, dict_tags, figs,
-        model, X_transformed.sample(100), y_pred_test
-    )
-
-    logger.info("All done!")
+logger.info("All done!")
 
 
-if __name__ == '__main__':
-    main()
+# if __name__ == '__main__':
+#     main()

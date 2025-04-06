@@ -18,7 +18,6 @@ import pandas as pd
 import xgboost as xgb
 import optuna
 from optuna.integration import XGBoostPruningCallback
-from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import PowerTransformer, StandardScaler
 from sklearn.metrics import mean_absolute_percentage_error
@@ -408,7 +407,7 @@ def split_randomly_data(X, y, config, categorical_features=None):
     """
     # For XGBoost, we need to encode categorical features
     X_encoded = X.copy()
-    
+
     # Convert categorical features to numeric using one-hot encoding
     if categorical_features:
         for col in categorical_features:
@@ -448,7 +447,8 @@ def split_randomly_data(X, y, config, categorical_features=None):
     return {
         'train': dtrain,
         'validation': dval,
-        'test': dtest
+        'test': dtest,
+        'mini_test': X_test.sample(10, random_state=42),
     }
 
 
@@ -600,163 +600,10 @@ def objective(trial, data_dict, config, transformer):
     save_to_mlflow_hyperopt(
         dict_params, dict_metrics, dict_tags,
         model,
-        data_dict['test'].slice(np.arange(0, 10)).get_data(),
+        data_dict['mini_test'],
         y_obs_test[:10]
     )
     return mape
-
-
-def train_xgboost_model(data_dict, params):
-    """
-    Train an XGBoost model using the provided data pools and params.
-
-    Args:
-        data_dict (dict): A dictionary containing data for train, validation, and test sets.
-        params  (dict): Configuration dictionary containing model hyperparameters.
-
-    Returns:
-        XGBRegressor: A trained XGBoost model.
-    """
-    # Train the model
-    model = xgb.train(
-        params,
-        data_dict['train'],
-        evals=[(data_dict['validation'], 'validation')],
-        num_boost_round=1000,
-        early_stopping_rounds=25,
-        verbose_eval=100
-    )
-
-    return model
-
-
-# metrics
-def calculate_metrics(y, y_pred, best_percent=1.0):
-    # Create a DataFrame to hold y, y_pred, and MAPE
-    df = pd.DataFrame({'y': y, 'y_pred': y_pred})
-
-    # Calculate APE
-    df['perc_error'] = 1 - df['y_pred'] / df['y']
-    df['ape'] = np.abs(df['perc_error'])
-
-    # Determine the threshold ape to filter the best_percent data
-    threshold_ape = df['ape'].quantile(best_percent)
-
-    # Filter the best_percent of the data
-    df_best = df[df['ape'] <= threshold_ape]
-
-    # Calculate metrics
-    rmse = np.sqrt(mean_squared_error(df_best['y'], df_best['y_pred']))
-    mape = df_best['ape'].mean()
-    meape = df_best['ape'].median()
-    r2 = r2_score(df_best['y'], df_best['y_pred'])
-    n_size = int(len(y))
-    worst_negative_error = df['perc_error'].min()
-    worst_positive_error = df['perc_error'].max()
-
-    return pd.Series({
-        "mape": mape,
-        "meape": meape,
-        "rmse": rmse,
-        "r2": r2,
-        "n_size": n_size,
-        "worst_negative_error": worst_negative_error,
-        "worst_positive_error": worst_positive_error
-    })
-
-
-# plots
-def create_mlflow_dicts(config_model, tbl, pools):
-    """
-    Create dictionaries for parameters, metrics, and tags to upload to MLFlow.
-
-    Args:
-        config_model (dict): Configuration dictionary for the model.
-        tbl (pd.DataFrame): Table containing metrics for train, validation, and test sets.
-        pools (dict): Dictionary containing XGBoost Pool objects for train, validation, and test sets.
-
-    Returns:
-        tuple: A tuple containing three dictionaries (parameters, metrics, tags).
-    """
-    # s0: transpose tbl
-    tbl = tbl.T.copy() 
-
-    # s1: parameters
-    dict_params = {
-        f"hyperparameters__{k}": v
-        for k, v in config_model['hyperparameters'].items()
-    }
-
-    dict_params.update({
-        f"data__{k}": v
-        for k, v in config_model['data'].items()
-        if k not in ['split_type']
-    })
-
-    # s2: create metrics
-    dict_metrics = {
-        f"test__{k}": v
-        for k, v in tbl.query('index == "test"').to_dict(orient='records')[0].items()
-        if k not in ['worst_negative_error', 'worst_positive_error', 'r2', 'n_size']
-    }
-    dict_metrics.update({
-        f"train__{k}": v
-        for k, v in tbl.query('index == "train"').to_dict(orient='records')[0].items()
-        if k not in ['worst_negative_error', 'worst_positive_error', 'meape', 'r2']
-    })
-    dict_metrics.update({
-        "n_features": pools['train'].num_col(),
-    })
-
-    # s3: tags
-    dict_tags = {
-        'model': config_model['model_name'],
-        'purpose': config_model['purpose'],
-        'target': list(config_model['target'].keys())[0],
-        'split_type': config_model['data']['split_type'],
-        'objective_variable_transformation': config_model['target'].get(
-            list(config_model['target'].keys())[0]
-        ),
-    }
-
-    return dict_params, dict_metrics, dict_tags
-
-
-def save_to_mlflow(
-        dict_params, dict_metrics, dict_tags, figs, model, X_sample, y_sample
-        ):
-    """
-    Save model parameters, metrics, tags, plots, and the model itself to MLFlow.
-
-    Args:
-        dict_params (dict): Model parameters to log.
-        dict_metrics (dict): Model metrics to log.
-        dict_tags (dict): Tags to set in MLFlow.
-        figs (dict): Dictionary of matplotlib figures to log as artifacts.
-        model (XGBoostRegressor): Trained XGBoost model.
-        X_sample (pd.DataFrame): Sample of features for signature inference.
-        y_sample (pd.Series): Sample of target values for signature inference.
-    """
-    # Log parameters
-    mlflow.log_params(dict_params)
-
-    # Log metrics
-    mlflow.log_metrics(dict_metrics)
-
-    # Set tags
-    mlflow.set_tags(dict_tags)
-
-    # Log figures
-    for fig_name, fig in figs.items():
-        mlflow.log_figure(fig, f"{fig_name}.png")
-
-    # Log the model
-    signature = infer_signature(X_sample, y_sample)
-    mlflow.xgboost.log_model(
-        model,
-        artifact_path="models",
-        signature=signature
-    )
 
 
 # main

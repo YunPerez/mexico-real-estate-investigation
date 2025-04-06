@@ -586,7 +586,7 @@ def plot_predicted_vs_real(y, y_pred):
     with plt.style.context(style='tableau-colorblind10'):
         # y pred vs y
         fig, ax = plt.subplots(1, 3, figsize=(14, 6))
-        sns.scatterplot(y=y, x=y_pred, ax=ax[0])
+        sns.scatterplot(x=y, y=y_pred, ax=ax[0])
         ax[0].set_title('Predicted vs Real')
         ax[0].set_xlabel('Real')
         ax[0].set_ylabel('Predicted')

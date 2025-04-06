@@ -1,26 +1,21 @@
 model:
-  model_name: catboost
-  purpose: counterfactual
+  model_name: regtree
+  purpose: hyperopt
   hyperparameters:
-    iterations: 500
-    learning_rate: 0.15
-    max_depth: 6
-    # l2_leaf_reg: 3
-    loss_function: RMSE
-    eval_metric: RMSE
-    random_seed: 42
-    verbose: 100
-    use_best_model: true
-    early_stopping_rounds: 20
+    criterion: squared_error
+    max_depth: 4
+    min_samples_split: 2
+    min_samples_leaf: 1
+    splitter: best
+    random_state: 42
   data:
-    # n_rows: 100000
     split_type: random
     train_size: 0.8
-    validation_size: 0.1
     stratify: property_type_id
     best_percentage: 0.99
+    # n_rows: 10000
   target: 
-    ppsm_saleable: boxcox
+    ppsm_saleable: identity
   features:
     # controls
       half_bathrooms: identity
@@ -35,23 +30,23 @@ model:
       # space
       # hex_longitude: identity
       # hex_latitude: identity
-      # ppsm_terrain: identity
-      hex_embedding_1_d16_v2: identity
-      hex_embedding_2_d16_v2: identity
-      hex_embedding_3_d16_v2: identity
-      hex_embedding_4_d16_v2: identity
-      hex_embedding_5_d16_v2: identity
-      hex_embedding_6_d16_v2: identity
-      hex_embedding_7_d16_v2: identity
-      hex_embedding_8_d16_v2: identity
-      hex_embedding_9_d16_v2: identity
-      hex_embedding_10_d16_v2: identity
-      hex_embedding_11_d16_v2: identity
-      hex_embedding_12_d16_v2: identity
-      hex_embedding_13_d16_v2: identity
-      hex_embedding_14_d16_v2: identity
-      hex_embedding_15_d16_v2: identity
-      hex_embedding_16_d16_v2: identity
+      ppsm_terrain: identity
+      # hex_embedding_1_d16_v2: identity
+      # hex_embedding_2_d16_v2: identity
+      # hex_embedding_3_d16_v2: identity
+      # hex_embedding_4_d16_v2: identity
+      # hex_embedding_5_d16_v2: identity
+      # hex_embedding_6_d16_v2: identity
+      # hex_embedding_7_d16_v2: identity
+      # hex_embedding_8_d16_v2: identity
+      # hex_embedding_9_d16_v2: identity
+      # hex_embedding_10_d16_v2: identity
+      # hex_embedding_11_d16_v2: identity
+      # hex_embedding_12_d16_v2: identity
+      # hex_embedding_13_d16_v2: identity
+      # hex_embedding_14_d16_v2: identity
+      # hex_embedding_15_d16_v2: identity
+      # hex_embedding_16_d16_v2: identity
 categorical_recasters:
   equipment_id:
     1: 'low'
