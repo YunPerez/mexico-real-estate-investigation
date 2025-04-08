@@ -3,16 +3,18 @@ model:
   purpose: hyperopt
   hyperparameters:
     objective: reg:squarederror
-    eval_metric: rmse
+    eval_metric: mae
     booster: gbtree
-    eta: 0.1
-    max_depth: 6
+    eta: 0.31
+    max_depth: 10
     nthread: -1
     seed: 42
+    lambda: 10
+    subsample: 1
   training:
-    num_boost_round: 500
-    early_stopping_rounds: 20
-    verbose_eval: 100
+    num_boost_round: 1000
+    early_stopping_rounds: 25
+    verbose_eval: 50
   data:
     split_type: random
     train_size: 0.8
@@ -21,7 +23,7 @@ model:
     best_percentage: 0.99
     # n_rows: 10000
   target: 
-    ppsm_saleable: boxcox
+    ppsm_saleable: log
   features:
     # controls
       half_bathrooms: identity

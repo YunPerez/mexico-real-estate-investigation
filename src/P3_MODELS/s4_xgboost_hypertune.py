@@ -448,7 +448,7 @@ def split_randomly_data(X, y, config, categorical_features=None):
         'train': dtrain,
         'validation': dval,
         'test': dtest,
-        'mini_test': X_test.sample(10, random_state=42),
+        'mini_test': X_test.sample(100, random_state=42),
     }
 
 
@@ -540,24 +540,15 @@ def objective(trial, data_dict, config, transformer):
     # Update hyperparameters based on trial
     params = config['hyperparameters'].copy()
 
-    # Select Objective Function
-    objective_type = trial.suggest_categorical(
-        'objective',
-        [
-            'reg:squarederror',
-            'reg:absoluteerror'
-        ]
-    )
-
     # Update
     params.update({
         # tunning
-        'objective': objective_type,
-        'max_depth': trial.suggest_int('max_depth', 3, 10),
-        'eta': trial.suggest_float('eta', 0.01, 0.4),
-        'subsample': trial.suggest_float('subsample', 0.5, 1.0),
-        'lambda': trial.suggest_float('lambda', 1e-8, 10),
+        'max_depth': trial.suggest_int('max_depth', 8, 20),
+        'eta': trial.suggest_float('eta', 0.3, 0.6),
+        'subsample': trial.suggest_float('subsample', 0.85, 1.0),
+        'lambda': trial.suggest_float('lambda', 7.0, 15.0),
         # fixed
+        'objective': 'reg:squarederror',
         'eval_metric': 'mae',
         'seed': 42,
         'booster': 'gbtree',
@@ -587,6 +578,19 @@ def objective(trial, data_dict, config, transformer):
     y_pred_test = get_predictions(
         model, data_dict['test'], transformer
     )
+
+    # check if y_pred has NaN values
+    p_nan = np.isnan(y_pred_test).mean()
+    if p_nan > 0.15:
+        logger.warning(f"NaN values detected in predictions: {p_nan * 100}% NaN values")
+        return float('inf')
+    elif p_nan > 0:
+        logger.warning(f"NaN values detected in predictions: {p_nan * 100}% NaN values")
+        logger.info("Replacing NaN values with mean of predictions")
+        # replace with mean
+        mean_y_pred = np.nanmean(y_pred_test)
+        mask = np.isnan(y_pred_test)
+        y_pred_test[mask] = mean_y_pred
 
     # Evaluate the model
     mape = mean_absolute_percentage_error(y_obs_test, y_pred_test)

@@ -543,10 +543,10 @@ def objective(trial, data_dict, config, transformer):
     # Define hyperparameters to tune
     params = {
         # tunning
-        'loss_function': trial.suggest_categorical('loss_function', ['RMSE', 'MAE', 'MAPE']),
+        'loss_function': trial.suggest_categorical('loss_function', ['RMSE', 'MAE']),
         'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.4),
         'max_depth': trial.suggest_int('max_depth', 3, 10),
-        'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 1e-8, 10),
+        'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 1e-4, 10, log=True),
         # fixed
         'eval_metric': 'MAE',
         'iterations': 1000,
@@ -566,6 +566,8 @@ def objective(trial, data_dict, config, transformer):
         eval_set=data_dict['validation'],
         callbacks=[pruning_callback]
     )
+    # print the number of iterations
+    logger.info(f"Number of effective iterations: {model.tree_count_}")
 
     # Make predictions
     y_obs_test = get_target_value(
@@ -575,6 +577,19 @@ def objective(trial, data_dict, config, transformer):
     y_pred_test = get_predictions(
         model, data_dict['test'], transformer
     )
+
+    # check if y_pred has NaN values
+    p_nan = np.isnan(y_pred_test).mean()
+    if p_nan > 0.15:
+        logger.warning(f"NaN values detected in predictions: {p_nan * 100}% NaN values")
+        return float('inf')
+    elif p_nan > 0:
+        logger.warning(f"NaN values detected in predictions: {p_nan * 100}% NaN values")
+        logger.info("Replacing NaN values with mean of predictions")
+        # replace with mean
+        mean_y_pred = np.nanmean(y_pred_test)
+        mask = np.isnan(y_pred_test)
+        y_pred_test[mask] = mean_y_pred
 
     # Evaluate the model
     mape = mean_absolute_percentage_error(y_obs_test, y_pred_test)
@@ -636,7 +651,7 @@ def main():
             lambda trial: objective(
                 trial, pools, config_model, transformer
             ),
-            n_trials=10,
+            n_trials=100,
             show_progress_bar=True
         )
         logger.info("Hyperparameter tuning completed. Bye!!")
