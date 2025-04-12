@@ -448,7 +448,7 @@ def split_randomly_data(X, y, config, categorical_features=None):
         'train': train_pool,
         'validation': val_pool,
         'test': test_pool,
-        'mini_sample': X_test.sample(10, random_state=42)
+        'mini_sample': X_test.sample(100, random_state=42)
     }
 
 

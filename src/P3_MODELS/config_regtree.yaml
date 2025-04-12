@@ -15,7 +15,7 @@ model:
     best_percentage: 0.99
     # n_rows: 10000
   target: 
-    ppsm_saleable: identity
+    ppsm_saleable: boxcox
   features:
     # controls
       half_bathrooms: identity

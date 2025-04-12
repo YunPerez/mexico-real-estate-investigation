@@ -403,7 +403,7 @@ def split_randomly_data(X, y, config, categorical_features=None):
     """
     # For DecisionTree, we need to encode categorical features
     X_encoded = X.copy()
-    
+
     # Convert categorical features to numeric using one-hot encoding
     if categorical_features:
         for col in categorical_features:
@@ -532,7 +532,7 @@ def objective(trial, data_dict, config, transformer):
     """
     # Define hyperparameters to tune
     params = {
-        'criterion': trial.suggest_categorical('criterion', ['squared_error', 'friedman_mse', 'absolute_error']),
+        'criterion': trial.suggest_categorical('criterion', ['squared_error']),
         'max_depth': trial.suggest_int('max_depth', 3, 20),
         'min_samples_split': trial.suggest_int('min_samples_split', 2, 20),
         'min_samples_leaf': trial.suggest_int('min_samples_leaf', 1, 20),
@@ -552,6 +552,19 @@ def objective(trial, data_dict, config, transformer):
     y_pred_test = get_predictions(
         model, data_dict['X_test'], transformer
     )
+
+    # check if y_pred has NaN values
+    p_nan = np.isnan(y_pred_test).mean()
+    if p_nan > 0.15:
+        logger.warning(f"NaN values detected in predictions: {p_nan * 100}% NaN values")
+        return float('inf')
+    elif p_nan > 0:
+        logger.warning(f"NaN values detected in predictions: {p_nan * 100}% NaN values")
+        logger.info("Replacing NaN values with mean of predictions")
+        # replace with mean
+        mean_y_pred = np.nanmean(y_pred_test)
+        mask = np.isnan(y_pred_test)
+        y_pred_test[mask] = mean_y_pred
 
     # Evaluate the model
     mape = mean_absolute_percentage_error(y_obs_test, y_pred_test)
@@ -613,7 +626,7 @@ def main():
             lambda trial: objective(
                 trial, pools, config_model, transformer
             ),
-            n_trials=10,
+            n_trials=100,
             show_progress_bar=True
         )
         logger.info("Hyperparameter tuning completed. Bye!!")
